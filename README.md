@@ -235,6 +235,14 @@ bundle install
 bundle exec rspec
 ```
 
+## JSON export on GitHub Pages
+
+The `Publish advisories.json` workflow exports the RubySec gem advisories to
+`advisories.json.gz` every 15 minutes and publishes it on GitHub Pages, so
+that a Ruby program can check its gems with `Zlib`, `JSON` and
+`Gem::Requirement` only. See [docs/advisories-json.md](docs/advisories-json.md)
+for the setup, the download URL, the file format and a Ruby example.
+
 ## GitHub Security Advisory Sync (GHSA)
 
  * The usual GHSA/SYNC workflow is:

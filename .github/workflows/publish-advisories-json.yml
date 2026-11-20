@@ -1,0 +1,242 @@
+name: Publish advisories.json
+
+# Exports the RubySec advisories to advisories.json.gz + manifest.json and
+# publishes them on GitHub Pages. See docs/advisories-json.md.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  # A manual run always regenerates and redeploys.
+  workflow_dispatch:
+  # So do changes to the generator or to this workflow.
+  push:
+    branches: [ master ]
+    paths:
+      - lib/advisories_json_export.rb
+      - scripts/export-advisories-json
+      - .github/workflows/publish-advisories-json.yml
+
+permissions: {}
+
+# One Pages deployment at a time. A run in progress is never cancelled (a
+# deployment cut halfway could leave Pages in an odd state); a newer pending
+# run replaces an older pending one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPOSITORY: https://github.com/rubysec/ruby-advisory-db
+
+jobs:
+  check:
+    name: Check upstream HEAD
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pages: read
+    outputs:
+      source_commit: ${{ steps.upstream.outputs.sha }}
+      regenerate: ${{ steps.decide.outputs.regenerate }}
+    steps:
+      - name: Read RubySec HEAD
+        id: upstream
+        run: |
+          sha="$(git ls-remote "$SOURCE_REPOSITORY" HEAD | cut -f1)"
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Unexpected git ls-remote output for $SOURCE_REPOSITORY: '$sha'"
+            exit 1
+          fi
+          echo "RubySec HEAD: $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Locate the Pages site
+        id: pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if ! info="$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq '[.html_url, .build_type] | @tsv' 2>&1)"; then
+            message="GitHub Pages is not enabled for $GITHUB_REPOSITORY (Settings > Pages > Source: GitHub Actions). $info"
+            if [[ "$EVENT_NAME" == "schedule" ]]; then
+              # Do not fail every 15 minutes before Pages is set up.
+              echo "::warning::$message"
+              echo "enabled=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::$message"
+            exit 1
+          fi
+          IFS=$'\t' read -r url build_type <<< "$info"
+          if [[ "$build_type" != "workflow" ]]; then
+            echo "::error::Pages source is '$build_type'; set Settings > Pages > Source to 'GitHub Actions'."
+            exit 1
+          fi
+          echo "Pages site: $url"
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Read the published manifest
+        id: published
+        if: steps.pages.outputs.enabled == 'true'
+        env:
+          PAGE_URL: ${{ steps.pages.outputs.url }}
+        run: |
+          # The query string bypasses the Pages CDN cache.
+          status="$(curl -sS -L --retry 3 --max-time 30 -o manifest.json \
+            -w '%{http_code}' "${PAGE_URL%/}/manifest.json?ts=$(date +%s)" || echo "000")"
+          case "$status" in
+            200)
+              sha="$(jq -r '.source_commit // ""' manifest.json || true)"
+              digest="$(jq -r '.generator_digest // ""' manifest.json || true)"
+              echo "Published: source_commit=$sha generator_digest=$digest"
+              ;;
+            404)
+              echo "No manifest published yet: first deployment."
+              sha=""; digest=""
+              ;;
+            *)
+              echo "::warning::Could not read the published manifest (HTTP $status); regenerating."
+              sha=""; digest=""
+              ;;
+          esac
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the generator
+        if: steps.pages.outputs.enabled == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            lib
+            scripts
+
+      - name: Set up Ruby
+        if: steps.pages.outputs.enabled == 'true'
+        uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+        with:
+          ruby-version: 4.0
+
+      - name: Decide
+        id: decide
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PAGES_ENABLED: ${{ steps.pages.outputs.enabled }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+          PUBLISHED_SHA: ${{ steps.published.outputs.sha }}
+          PUBLISHED_DIGEST: ${{ steps.published.outputs.digest }}
+        run: |
+          if [[ "$PAGES_ENABLED" != "true" ]]; then
+            regenerate=false; reason="GitHub Pages is not enabled"
+          else
+            digest="$(ruby scripts/export-advisories-json --digest)"
+            if [[ "$EVENT_NAME" != "schedule" ]]; then
+              regenerate=true; reason="$EVENT_NAME event"
+            elif [[ -z "$PUBLISHED_SHA" ]]; then
+              regenerate=true; reason="nothing published yet"
+            elif [[ "$PUBLISHED_SHA" != "$UPSTREAM_SHA" ]]; then
+              regenerate=true; reason="RubySec moved from $PUBLISHED_SHA to $UPSTREAM_SHA"
+            elif [[ "$PUBLISHED_DIGEST" != "$digest" ]]; then
+              regenerate=true; reason="generator changed"
+            else
+              regenerate=false; reason="$UPSTREAM_SHA is already published"
+            fi
+          fi
+          echo "regenerate=$regenerate ($reason)"
+          echo "### advisories.json: regenerate=$regenerate" >> "$GITHUB_STEP_SUMMARY"
+          echo "$reason" >> "$GITHUB_STEP_SUMMARY"
+          echo "regenerate=$regenerate" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Generate advisories.json.gz
+    needs: check
+    if: needs.check.outputs.regenerate == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the generator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            lib
+            scripts
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+        with:
+          ruby-version: 4.0
+
+      - name: Fetch the announced RubySec commit
+        env:
+          SOURCE_COMMIT: ${{ needs.check.outputs.source_commit }}
+        run: |
+          src="$RUNNER_TEMP/source"
+          git init --quiet "$src"
+          # Fetch that exact commit, not whatever HEAD is now.
+          git -C "$src" fetch --quiet --depth=1 --no-tags "$SOURCE_REPOSITORY" "$SOURCE_COMMIT"
+          git -C "$src" -c advice.detachedHead=false checkout --quiet "$SOURCE_COMMIT"
+          actual="$(git -C "$src" rev-parse HEAD)"
+          if [[ "$actual" != "$SOURCE_COMMIT" ]]; then
+            echo "::error::Checked out $actual instead of $SOURCE_COMMIT"
+            exit 1
+          fi
+
+      - name: Generate
+        env:
+          SOURCE_COMMIT: ${{ needs.check.outputs.source_commit }}
+        run: |
+          ruby scripts/export-advisories-json \
+            --source "$RUNNER_TEMP/source" \
+            --output _site \
+            --source-commit "$SOURCE_COMMIT" \
+            --source-repository "$SOURCE_REPOSITORY"
+
+      - name: Verify the output
+        env:
+          SOURCE_COMMIT: ${{ needs.check.outputs.source_commit }}
+        run: |
+          ruby -rjson -rzlib -rdigest -e '
+            manifest = JSON.parse(File.read("_site/manifest.json"))
+            gz = File.binread("_site/advisories.json.gz")
+            db = JSON.parse(Zlib.gunzip(gz))
+            abort "sha256 mismatch" unless Digest::SHA256.hexdigest(gz) == manifest["sha256"]
+            [manifest, db].each do |doc|
+              abort "wrong source_commit" unless doc["source_commit"] == ENV["SOURCE_COMMIT"]
+            end
+            abort "no advisories" unless db["advisory_count"].to_i.positive?
+            puts "OK: #{db["advisory_count"]} advisories, #{db["gem_count"]} gems"
+          '
+          ls -l _site
+          {
+            echo '```json'
+            cat _site/manifest.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+  # Runs only when build succeeded: a failed generation leaves the current
+  # Pages deployment untouched.
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

@@ -1,0 +1,60 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+#
+# Exports the gem advisories of a ruby-advisory-db checkout to
+# advisories.json.gz + manifest.json. Standard library only: no bundle
+# install needed.
+#
+#   ruby scripts/export-advisories-json --source PATH --output DIR [--source-commit SHA]
+#   ruby scripts/export-advisories-json --digest
+#
+
+require 'optparse'
+require_relative '../lib/advisories_json_export'
+
+options = {
+  source: Dir.pwd,
+  output: '_site',
+  source_repository: AdvisoriesJsonExport::DEFAULT_SOURCE_REPOSITORY
+}
+
+OptionParser.new do |opts|
+  opts.banner = 'Usage: export-advisories-json [options]'
+
+  opts.on('--source PATH', 'ruby-advisory-db checkout to read (default: current directory)') do |v|
+    options[:source] = v
+  end
+  opts.on('--output DIR', 'Directory to write the files into (default: _site)') do |v|
+    options[:output] = v
+  end
+  opts.on('--source-commit SHA', 'Commit of the checkout (default: git rev-parse HEAD in --source)') do |v|
+    options[:source_commit] = v
+  end
+  opts.on('--source-repository URL', 'Repository URL recorded in the output') do |v|
+    options[:source_repository] = v
+  end
+  opts.on('--digest', 'Print the generator digest and exit') do
+    puts AdvisoriesJsonExport.generator_digest
+    exit
+  end
+end.parse!
+
+source_commit = options[:source_commit] ||
+                IO.popen(['git', '-C', options[:source], 'rev-parse', 'HEAD'], &:read).strip
+
+begin
+  manifest = AdvisoriesJsonExport.generate(
+    source_dir: options[:source],
+    output_dir: options[:output],
+    source_commit: source_commit,
+    source_repository: options[:source_repository]
+  )
+rescue AdvisoriesJsonExport::Error => e
+  warn "export-advisories-json: #{e.message}"
+  exit 1
+end
+
+puts "Wrote #{File.join(options[:output], manifest['file'])} " \
+     "(#{manifest['advisory_count']} advisories, #{manifest['gem_count']} gems, " \
+     "#{manifest['bytes']} bytes) from #{manifest['source_commit']}"
