@@ -34,7 +34,7 @@ always describes the data file served next to it.
 2. *Settings > Pages > Build and deployment > Source*: choose
    **GitHub Actions** (not "Deploy from a branch").
 3. *Actions > Publish advisories.json > Run workflow* on `master` for the
-   first deployment, or wait for the next quarter-hour.
+   first deployment, or wait for the next scheduled run.
 
 The *github-pages* environment created by step 2 only accepts deployments
 from the default branch. Run the workflow from `master`.
@@ -44,7 +44,7 @@ nothing; manual runs fail with an explanation.
 
 ## How the workflow works
 
-The workflow runs every 15 minutes, on demand (*Run workflow*) and on every
+The workflow runs every 2 hours (at minute 17), on demand (*Run workflow*) and on every
 push to `master` that changes the generator or the workflow.
 
 1. **check**

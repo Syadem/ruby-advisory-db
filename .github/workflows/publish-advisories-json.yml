@@ -5,7 +5,8 @@ name: Publish advisories.json
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    # Every 2 hours, at minute 17 (the top of the hour is GitHub's busiest).
+    - cron: '17 */2 * * *'
   # A manual run always regenerates and redeploys.
   workflow_dispatch:
   # So do changes to the generator or to this workflow.
@@ -60,7 +61,7 @@ jobs:
           if ! info="$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq '[.html_url, .build_type] | @tsv' 2>&1)"; then
             message="GitHub Pages is not enabled for $GITHUB_REPOSITORY (Settings > Pages > Source: GitHub Actions). $info"
             if [[ "$EVENT_NAME" == "schedule" ]]; then
-              # Do not fail every 15 minutes before Pages is set up.
+              # Do not fail on every scheduled run before Pages is set up.
               echo "::warning::$message"
               echo "enabled=false" >> "$GITHUB_OUTPUT"
               exit 0
