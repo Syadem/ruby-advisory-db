@@ -57,4 +57,5 @@ end
 
 puts "Wrote #{File.join(options[:output], manifest['file'])} " \
      "(#{manifest['advisory_count']} advisories, #{manifest['gem_count']} gems, " \
+     "#{manifest['ruby_advisory_count']} Ruby advisories, " \
      "#{manifest['bytes']} bytes) from #{manifest['source_commit']}"

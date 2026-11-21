@@ -1,13 +1,15 @@
 # advisories.json.gz on GitHub Pages
 
 The workflow [`publish-advisories-json.yml`](../.github/workflows/publish-advisories-json.yml)
-turns the gem advisories of the public RubySec database
+turns the advisories of the public RubySec database
 (<https://github.com/rubysec/ruby-advisory-db>) into one gzipped JSON file
-and publishes it on GitHub Pages at a stable URL.
+and publishes it on GitHub Pages at a stable URL. It covers both the gems
+(`gems/`) and the Ruby interpreters themselves (`rubies/`: CRuby, JRuby…).
 
-A Ruby program can then check the versions of its gems against the known
-advisories with the standard library only: no Bundler, no bundler-audit, no
-clone of the source repository and no YAML parsing on the client.
+A Ruby program can then check the versions of its gems and of its Ruby
+against the known advisories with the standard library only: no Bundler, no
+bundler-audit, no clone of the source repository and no YAML parsing on the
+client.
 
 ## Published URLs
 
@@ -99,6 +101,7 @@ Safety:
   "generated_at": "2026-11-20T16:56:47Z",
   "gem_count": 484,
   "advisory_count": 1379,
+  "ruby_advisory_count": 150,
   "gems": {
     "rack": [
       {
@@ -119,13 +122,36 @@ Safety:
         "platform": "jruby"
       }
     ]
+  },
+  "rubies": {
+    "ruby": [
+      {
+        "id": "CVE-2026-46727",
+        "cve": "CVE-2026-46727",
+        "url": "https://nvd.nist.gov/vuln/detail/CVE-2026-46727",
+        "title": "CVE-2026-46727 - Use-after-free in pthread-based getaddrinfo timeout handler",
+        "date": "2026-05-20",
+        "patched_versions": [">= 4.0.5"],
+        "unaffected_versions": ["< 4.0"]
+      }
+    ],
+    "jruby": [ … ]
   }
 }
 ```
 
-- `gems` is keyed by gem name (the directory under `gems/`); gems and
-  advisories are sorted, so two exports of the same commit only differ by
-  `generated_at`.
+- `gems` is keyed by gem name (the directory under `gems/`); `rubies` is
+  keyed by Ruby engine (the directory under `rubies/`: `ruby`, `jruby`,
+  `mruby`, `mrubyc`, `rbx`). Keys and advisories are sorted, so two exports
+  of the same commit only differ by `generated_at`.
+- Ruby advisories use the same fields and the same matching rule as gem
+  advisories. Compare `RUBY_VERSION` with the `ruby` list on CRuby, and
+  `JRUBY_VERSION` (not `RUBY_VERSION`) with the `jruby` list on JRuby.
+  A Ruby installed from a Linux distribution package may carry backported
+  fixes under an older version number: expect false positives there. The
+  official `ruby` Docker images are built from upstream sources.
+- `rubies` and `ruby_advisory_count` were added after the first release
+  without changing `schema_version`: clients that ignore them keep working.
 - `id` is the advisory file name (`CVE-…`, `GHSA-…`, `OSVDB-…`), like in
   bundler-audit.
 - `cve`, `ghsa`, `url`, `title`, `date`, `patched_versions`,
@@ -155,7 +181,8 @@ Safety:
   "sha256": "009cc968…",
   "bytes": 90780,
   "gem_count": 484,
-  "advisory_count": 1379
+  "advisory_count": 1379,
+  "ruby_advisory_count": 150
 }
 ```
 
@@ -197,6 +224,15 @@ Gem.loaded_specs.each_value do |spec|
 
     warn "#{spec.name} #{spec.version}: #{advisory['id']} #{advisory['title']} #{advisory['url']}"
   end
+end
+
+# The Ruby interpreter itself, with the same rule.
+ruby_version = Gem::Version.new(RUBY_ENGINE == 'jruby' ? JRUBY_VERSION : RUBY_VERSION)
+Array(db.fetch('rubies', {})[RUBY_ENGINE]).each do |advisory|
+  next if matches.(advisory['patched_versions'], ruby_version)
+  next if matches.(advisory['unaffected_versions'], ruby_version)
+
+  warn "#{RUBY_ENGINE} #{ruby_version}: #{advisory['id']} #{advisory['title']} #{advisory['url']}"
 end
 ```
 

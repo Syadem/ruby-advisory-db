@@ -39,7 +39,7 @@ describe AdvisoriesJsonExport do
         patched_versions:
           - ">= 3.0.0"
       YAML
-      'gems/jruby-fake/OSVDB-999999.yml' => <<~YAML
+      'gems/jruby-fake/OSVDB-999999.yml' => <<~YAML,
         ---
         gem: jruby-fake
         osvdb: 999999
@@ -47,6 +47,29 @@ describe AdvisoriesJsonExport do
         title: Fictional JRuby-only issue without a fix
         date: 2099-03-01
         platform: jruby
+      YAML
+      'rubies/ruby/CVE-2099-1000.yml' => <<~YAML,
+        ---
+        engine: ruby
+        cve: 2099-1000
+        url: https://example.com/CVE-2099-1000
+        title: Fictional interpreter use-after-free
+        date: 2099-04-01
+        unaffected_versions:
+          - "< 3.3.0"
+        patched_versions:
+          - "~> 3.3.9, >= 3.3.9"
+          - ">= 3.4.2"
+      YAML
+      'rubies/jruby/CVE-2099-1001.yml' => <<~YAML
+        ---
+        engine: jruby
+        cve: 2099-1001
+        url: https://example.com/CVE-2099-1001
+        title: Fictional JRuby issue
+        date: 2099-05-01
+        patched_versions:
+          - ">= 9.4.9.0"
       YAML
     }
   end
@@ -135,6 +158,46 @@ describe AdvisoriesJsonExport do
       expect(db['gems']['fakegem'].first['patched_versions'].first)
         .to eq('~> 1.2.5, >= 1.2.5.1')
     end
+
+    it "indexes Ruby interpreter advisories by engine" do
+      expect(db['ruby_advisory_count']).to eq(2)
+      expect(db['rubies'].keys).to eq(%w[jruby ruby])
+      expect(db['rubies']['ruby']).to eq([{
+        'id' => 'CVE-2099-1000',
+        'cve' => 'CVE-2099-1000',
+        'url' => 'https://example.com/CVE-2099-1000',
+        'title' => 'Fictional interpreter use-after-free',
+        'date' => '2099-04-01',
+        'patched_versions' => ['~> 3.3.9, >= 3.3.9', '>= 3.4.2'],
+        'unaffected_versions' => ['< 3.3.0']
+      }])
+    end
+
+    it "matches Ruby versions with the same rule as gems" do
+      advisory = db['rubies']['ruby'].first
+      vulnerable = lambda do |version|
+        AdvisoryCheck.vulnerable?(advisory, Gem::Version.new(version))
+      end
+
+      expect(vulnerable.('3.2.9')).to be(false)  # unaffected
+      expect(vulnerable.('3.3.3')).to be(true)
+      expect(vulnerable.('3.3.9')).to be(false)  # patched in the 3.3 series
+      expect(vulnerable.('3.4.1')).to be(true)
+      expect(vulnerable.('3.4.2')).to be(false)
+    end
+  end
+
+  it "accepts a source without rubies/" do
+    FileUtils.rm_rf(File.join(source_dir, 'rubies'))
+    generate
+
+    expect(read_output).to include('rubies' => {}, 'ruby_advisory_count' => 0)
+  end
+
+  it "stops on an invalid Ruby advisory and names the file" do
+    write_advisories('rubies/ruby/CVE-2099-1002.yml' => "engine: [\n")
+
+    expect { generate }.to raise_error(%r{\Arubies/ruby/CVE-2099-1002\.yml: invalid YAML})
   end
 
   describe "manifest.json" do

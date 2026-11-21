@@ -10,11 +10,13 @@ require 'yaml'
 require 'zlib'
 
 #
-# Builds a compact, gzipped JSON index of the gem advisories found under
-# `gems/` in a checkout of the ruby-advisory-db repository.
+# Builds a compact, gzipped JSON index of the advisories found in a checkout
+# of the ruby-advisory-db repository: gem advisories under `gems/` (indexed
+# by gem name) and Ruby interpreter advisories under `rubies/` (indexed by
+# engine: ruby, jruby...).
 #
-# The output lets a Ruby program check its loaded gems against known
-# advisories with nothing but the standard library (Zlib + JSON +
+# The output lets a Ruby program check its gems and its Ruby version against
+# known advisories with nothing but the standard library (Zlib + JSON +
 # Gem::Requirement): no Bundler, no bundler-audit, no YAML parsing and no
 # clone of the source repository.
 #
@@ -62,7 +64,8 @@ module AdvisoriesJsonExport
   end
 
   #
-  # Reads `<source_dir>/gems/*/*.yml` and writes `advisories.json.gz` and
+  # Reads `<source_dir>/gems/*/*.yml` (required) and
+  # `<source_dir>/rubies/*/*.yml` (optional), and writes `advisories.json.gz` and
   # `manifest.json` into `output_dir`. Returns the manifest as a Hash.
   #
   # Raises InvalidAdvisory (naming the file) as soon as one advisory cannot
@@ -93,16 +96,19 @@ module AdvisoriesJsonExport
     end
 
     def document
-      gems = collect_gems
+      gems   = collect('gems', required: true)
+      rubies = collect('rubies', required: false)
 
       {
-        'schema_version'    => SCHEMA_VERSION,
-        'source_repository' => @source_repository,
-        'source_commit'     => @source_commit,
-        'generated_at'      => @generated_at.iso8601,
-        'gem_count'         => gems.size,
-        'advisory_count'    => gems.sum { |_, list| list.size },
-        'gems'              => gems
+        'schema_version'       => SCHEMA_VERSION,
+        'source_repository'    => @source_repository,
+        'source_commit'        => @source_commit,
+        'generated_at'         => @generated_at.iso8601,
+        'gem_count'            => gems.size,
+        'advisory_count'       => gems.sum { |_, list| list.size },
+        'ruby_advisory_count'  => rubies.sum { |_, list| list.size },
+        'gems'                 => gems,
+        'rubies'               => rubies
       }
     end
 
@@ -120,7 +126,8 @@ module AdvisoriesJsonExport
         'sha256'            => Digest::SHA256.hexdigest(gzip),
         'bytes'             => gzip.bytesize,
         'gem_count'         => doc['gem_count'],
-        'advisory_count'    => doc['advisory_count']
+        'advisory_count'    => doc['advisory_count'],
+        'ruby_advisory_count' => doc['ruby_advisory_count']
       }
 
       Dir.mkdir(output_dir) unless Dir.exist?(output_dir)
@@ -132,22 +139,28 @@ module AdvisoriesJsonExport
 
     private
 
-    def collect_gems
-      gems_dir = File.join(@source_dir, 'gems')
-      unless File.directory?(gems_dir)
-        raise Error, "no gems/ directory in #{@source_dir}"
+    #
+    # Reads `<dir>/<name>/*.yml` and indexes the advisories by <name>: the gem
+    # name under gems/, the Ruby engine (ruby, jruby...) under rubies/.
+    #
+    def collect(dir, required:)
+      base = File.join(@source_dir, dir)
+      unless File.directory?(base)
+        raise Error, "no #{dir}/ directory in #{@source_dir}" if required
+
+        return {}
       end
 
-      paths = Dir.glob('*/*.yml', base: gems_dir).sort
-      raise Error, "no advisory found under #{gems_dir}" if paths.empty?
+      paths = Dir.glob('*/*.yml', base: base).sort
+      raise Error, "no advisory found under #{base}" if paths.empty? && required
 
-      gems = Hash.new { |hash, name| hash[name] = [] }
+      index = Hash.new { |hash, name| hash[name] = [] }
       paths.each do |relative|
         name = File.dirname(relative)
-        gems[name] << load_advisory(File.join('gems', relative))
+        index[name] << load_advisory(File.join(dir, relative))
       end
 
-      gems.sort.to_h { |name, list| [name, list.sort_by { |a| a['id'] }] }
+      index.sort.to_h { |name, list| [name, list.sort_by { |a| a['id'] }] }
     end
 
     def load_advisory(relative_path)
